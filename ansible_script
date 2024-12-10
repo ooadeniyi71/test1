@@ -1,0 +1,142 @@
+---
+- hosts: localhost
+  vars_files:
+      - alertnames_type.yml
+      - alert_types.yml
+  tasks:
+  - name: Get CONFIG VIEW
+    command: oc config view
+    register: cfg
+  - debug:
+      msg: "{{ item.value | json_query('[*]') }}"
+    with_dict: "{{ cfg.stdout | from_yaml }}"
+    when: item.key == 'contexts'
+    loop_control:
+        label: "msg"
+ 
+  - set_fact:
+          clusterContext: "{{ item.value | json_query('[*].name') }}"
+    with_dict: "{{ cfg.stdout | from_yaml }}"
+    when: item.key == 'contexts'
+    loop_control:
+        label: "msg"
+ 
+  - set_fact:
+          clusterContext1: "{{ item.value | json_query('[*].context.cluster') }}"
+    with_dict: "{{ cfg.stdout | from_yaml }}"
+    when: item.key == 'contexts'
+    loop_control:
+        label: "msg"
+ 
+  - debug:
+       msg:
+         - "{{  clusterContext  }}"
+         - "{{  clusterContext1 }}"
+  - set_fact:
+       clusterContext2: "{{ clusterContext2 | d([]) + [{ 'clusterName': item[12:23], 'conText': item }]  }}"
+    with_items: "{{  clusterContext  }}"
+    loop_control:
+            label: "{{ item[12:23] }}"
+ 
+  - debug:
+       msg: "{{  item.conText }}"
+    loop: "{{ clusterContext2 }}"
+    #   when:
+ 
+ 
+ 
+ 
+  - name: USE  CONFIG CONTEXT
+    shell: |
+       oc config use-context {{ item.conText }}  > null
+       oc whoami -t
+       oc -n openshift-monitoring get route alertmanager-main -ojsonpath={.status.ingress[].host}
+    with_items: "{{ clusterContext2 }}"
+    register: cfg2
+    ignore_errors: true
+ 
+ 
+  - set_fact:
+      clusterToken: "{{ clusterToken | d([]) + [item ] }}"
+    with_items: "{{ cfg2.results |json_query('[*].stdout_lines[0]') }}"
+    loop_control:
+            label: "msg"
+ 
+  - set_fact:
+      alertAPI: "{{ alertAPI |d([]) + [item]  }}"
+    with_items: "{{ cfg2.results |json_query('[*].stdout_lines[1]') }}"
+    loop_control:
+            label: "msg"
+  - set_fact:
+      clusterName2: "{{clusterName2 |d([]) + [ item ] }}"
+    with_items: "{{ cfg2.results |json_query('[*].item.clusterName') }}"
+    loop_control:
+            label: "msg"
+  - debug:
+        msg:
+          - "{{ clusterName2 }}"
+          - "{{ clusterToken }}"
+          - "{{ alertAPI }}"
+ 
+ 
+  - debug:
+      msg: "{{ item }}"
+    with_together:
+        - "{{ cfg2.results |json_query('[*].item.clusterName') }}"
+        - "{{ cfg2.results |json_query('[*].stdout_lines[0]') }}"
+        - "{{ cfg2.results |json_query('[*].stdout_lines[1]') }}"
+    when: item.0 != 'ncw-az2-025'
+    loop_control:
+            label: "msg"
+ 
+ 
+ 
+  - name:  GET ALERTMANAGER OUTPUT
+    command: 'curl -H "Authorization: Bearer {{ item.1}}" -k "https://{{ item.2 }}/api/v1/alerts"'
+    with_together:
+        - "{{ cfg2.results |json_query('[*].item.clusterName') }}"
+        - "{{ cfg2.results |json_query('[*].stdout_lines[0]') }}"
+        - "{{ cfg2.results |json_query('[*].stdout_lines[1]') }}"
+    when: item.0 != 'ncw-az2-025'
+    loop_control:
+            label: "{{ item.0 }}"
+    register: cfg3
+ 
+  - debug:
+          msg: "{{ item }}"
+    loop: "{{ cfg3.results |json_query('[*].stdout') }}"
+    loop_control:
+            label: "{{ item.0 }}"
+ 
+ 
+  - name: ALERTMANAGER   URI REST_API
+    uri:
+      url: "https://{{ item.2 }}/api/v1/alerts"
+      method: GET
+      body_format: json
+      headers:
+              Content-Type: application/json
+              Accepted: application/html
+              Authorization: "Bearer {{ item.1 }}"
+      validate_certs: false
+      return_content: yes
+    with_together:
+        - "{{ cfg2.results |json_query('[*].item.clusterName') }}"
+        - "{{ cfg2.results |json_query('[*].stdout_lines[0]') }}"
+        - "{{ cfg2.results |json_query('[*].stdout_lines[1]') }}"
+          #   when: item.0 != 'ncw-az2-025' and   item.0 != 'ncw-az1-026'
+    loop_control:
+            label: "{{ item.0 }}"
+    register: result
+    ignore_errors: true
+ 
+  - name: PRINT RESULT
+    debug:
+      msg:
+        - "clusterNode:  {{ item.item [0]}}"
+        -  "{{ ( item.json.data | json_query('[*].labels') |json_query('[*].{AlertName: alertname, Node: node, NameSpace: namespace, AlertSource: openshift_io_alert_source, Severity: severity}') )   }}"
+    loop: "{{ result.results | json_query('[*]')  }}"
+    #   when:  item.item.0 == 'ncw-az1-025'
+    loop_control:
+            label: "msg"
+
